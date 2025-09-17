@@ -1,6 +1,6 @@
 import momentTimezone from 'moment-timezone';
 import { PrismaClient } from '@prisma/client/storage/client.js'
-import { HttpClientUtil, loggerUtil, BearerStrategy } from '../../expressium/index.js';
+import { HttpClientUtil, loggerUtil, BasicAndBearerStrategy, BearerStrategy } from '../../expressium/index.js';
 import { IAccountMap, IBatchWindow, IClientGroupMap, ICompanyMap, IEventMap } from './interfaces/index.js';
 
 const EVENTS_PERIOD_HOURS = 2;
@@ -64,35 +64,61 @@ export const createSigmaCloudEvents = async (includedCucSet: Set<string>): Promi
     await prisma.sigma_cloud_events_tracker_triggers.deleteMany({ where: { updated_at: { lt: momentTimezone.utc().subtract(EVENTS_PERIOD_MILLISECONDS, 'milliseconds').toDate() } } });
 
     const eventMapList = await fetchEvents();
+    const excludedAccountIdSet = new Set<number>([]);
+    const eventBundle: Record<string, Record<string, Record<string, number>>> = {}; 
 
-    const eventBundle = eventMapList.reduce(
-      (
-        accumulator: Record<string, Record<string, Record<string, number>>>, 
-        eventMap: IEventMap.IEventMap
-      ): Record<string, Record<string, Record<string, number>>> => {
-        const eventMapCuc = eventMap.cuc;
+    await Promise.allSettled(
+      eventMapList.map(
+        async (eventMap: IEventMap.IEventMap): Promise<void> => {
+          const eventMapAccountId = eventMap.accountId;
 
-        if (!includedCucSet.has(eventMapCuc)) {
-          return accumulator;
+          if (excludedAccountIdSet.has(eventMapAccountId)) {
+            return;
+          }
+          
+          const eventMapCuc = eventMap.cuc;
+  
+          if (!includedCucSet.has(eventMapCuc)) {
+            return;
+          }
+  
+          const eventMapCode = eventMap.code;
+  
+          if (!INCLUDED_CODE_SET.has(eventMapCode)) {
+            return;
+          }
+  
+          const httpClientInstance = new HttpClientUtil.HttpClient();
+  
+          httpClientInstance.setAuthenticationStrategy(
+            new BasicAndBearerStrategy.BasicAndBearerStrategy(
+              'post',
+              'https://cloud.segware.com.br/server/v2/auth',
+              process.env.SIGMA_CLOUD_USERNAME as string,
+              process.env.SIGMA_CLOUD_PASSWORD as string,
+              undefined,
+              undefined,
+              { type: "WEB" },
+              (response: Axios.AxiosXHR<any>): string => response.data
+            )
+          );
+  
+          const accountMap = (await httpClientInstance.get<IAccountMap.IAccountMap>(`https://cloud.segware.com.br/server/api/v1/6590/accounts/${ eventMapAccountId }`)).data;
+  
+          if (accountMap.onMaintenanceMode) {
+            excludedAccountIdSet.add(eventMapAccountId);
+
+            return;
+          }
+  
+          const accountBundle = eventBundle[eventMapCuc] || {};
+          const codeCountMap = accountBundle[eventMapAccountId] || {};
+  
+          eventBundle[eventMapCuc] = accountBundle;
+          accountBundle[eventMapAccountId] = codeCountMap;
+          codeCountMap[eventMapCode] = (codeCountMap[eventMapCode] || 0) + 1;
         }
-
-        const eventMapCode = eventMap.code;
-
-        if (!INCLUDED_CODE_SET.has(eventMapCode)) {
-          return accumulator;
-        }
-
-        const accountBundle = accumulator[eventMapCuc] || {};
-        const eventMapAccountId = eventMap.accountId;
-        const codeCountMap = accountBundle[eventMapAccountId] || {};
-
-        accumulator[eventMapCuc] = accountBundle;
-        accountBundle[eventMapAccountId] = codeCountMap;
-        codeCountMap[eventMapCode] = (codeCountMap[eventMapCode] || 0) + 1;
-
-        return accumulator;
-      },
-      {} as Record<string, Record<string, Record<string, number>>>
+      )
     );
     
     const sigmaCloudHttpClientInstance = new HttpClientUtil.HttpClient();
