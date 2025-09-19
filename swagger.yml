@@ -1,27 +1,33 @@
 openapi: 3.0.3
 info:
   title: 📢 Sigma Cloud Events Tracker
-  version: 1.0.1
+  version: 1.0.2
   description: |
     ## 📋 Overview
 
-    Sigma Cloud Events Tracker is a scheduled event monitoring system that analyzes events reported by Segware accounts to identify abnormal volumes within a defined time window (default: 2 hours). It connects to the Segware API, filters specific event codes, and groups occurrences by account and CUC. When event counts exceed a configurable threshold (default: 50), the service logs the case with enriched metadata — including account, company, and client group information — and tracks the alert in internal databases.
+    Sigma Cloud Events Tracker is a background job that monitors Segware event activity in 2-hour intervals. It connects to the Segware API, retrieves recent events, and filters them based on predefined codes and CUCs. Events are aggregated by account, CUC, and code, and if their count exceeds a configurable threshold, alerts are generated.
 
-    The service ensures idempotency through a trigger table, automatically clears expired alerts, and provides historical insight via a dedicated register log. While integrations with WhatsApp notifications and Segware alarm injection exist, they are currently disabled and ready for activation. This monitoring service plays a key role in ensuring operational awareness across client deployments by detecting excessive or potentially misconfigured alarm activity.
+    Each alert is enriched with external metadata from Segware’s account, company, and client group APIs. Alerts are tracked in internal databases and optionally sent via WhatsApp or injected into Segware's event system. Redundant alerts are avoided using a trigger tracking table, and alerts are automatically cleared once event volume normalizes.
+
+    The system is fault-tolerant, retries intelligently on API limits, and logs all activity for audit and observability. This enables proactive detection of excessive or misconfigured event activity across monitored environments.
 
     ### 🎯 Objectives 
     
-    - Monitor recent Segware event activity on a rolling 2-hour basis
-    - Identify excessive occurrences of specific alarm event codes
-    - Aggregate events by account, CUC, and code, applying per-code thresholds
-    - Enrich alerts with external metadata (account info, company, client group)
-    - Store and track alerts in the internal database for auditing and analysis
-    - Prevent duplicate alerting using trigger-state persistence
-    - Automatically clear alerts once event volumes drop below the threshold
-    - Handle Segware API limitations gracefully (e.g., pagination, data limits)
-    - Support future alert delivery via WhatsApp or Segware’s event alarm endpoint
-    - Operate securely using bearer token authentication for all external integrations
-    - Run reliably as a scheduled background job or worker process
+    - Monitor Segware alarm events within a rolling 2-hour window
+    - Fetch event data from the Segware API with bearer token authentication
+    - Support batched time windows to handle API pagination and data limits
+    - Filter events based on a predefined set of codes
+    - Filter events by a provided set of CUCs
+    - Aggregate event occurrences by CUC, account ID, and event code
+    - Generate alerts when event counts exceed the defined threshold
+    - Store and track active alerts to prevent duplicates
+    - Automatically clear alerts when event volumes fall below threshold
+    - Enrich alert data with account, company, and client group metadata
+    - Send alert messages to WhatsApp using the ChatPro API
+    - Inject alerts into Segware’s alarm event endpoint
+    - Persist alert records and metadata in internal reporting tables
+    - Log all operations and failures for observability and debugging
+    - Run as a scheduled background job suitable for automation environments
 servers:
   - url: http://localhost:3489
     description: Development server
