@@ -1,36 +1,40 @@
 import momentTimezone from 'moment-timezone';
 import { PrismaClient } from '@prisma/client/storage/client.js'
 import { HttpClientUtil, loggerUtil, BearerStrategy } from '../../expressium/index.js';
-import { IAccountMap, IBatchWindow, IClientGroupMap, ICompanyMap, IEventMap } from './interfaces/index.js';
+import { IAccountMap, IBatchWindowMap, IClientGroupMap, ICompanyMap, IEventMap, IOccurenceMap } from './interfaces/index.js';
 
+const OCCURENCES_PERIOD_HOURS = 2;
+const OCCURENCES_PERIOD_MILLISECONDS = momentTimezone.duration(OCCURENCES_PERIOD_HOURS, 'hours').asMilliseconds();
 const EVENTS_PERIOD_HOURS = 2;
 const EVENTS_PERIOD_MILLISECONDS = momentTimezone.duration(EVENTS_PERIOD_HOURS, 'hours').asMilliseconds();
 const INCLUDED_CODE_SET = new Set<string>(['E130', 'E131', 'E132', 'E133', '1130', '1131', '1132', '1133']);
+const SYSTEM_CLOSING_PERSON_ID = 52583;
 const EVENTS_COUNT_THRESHOLD = 20;
+const ACCOUNT_TRADE_NAME_LENGTH = 14;
 const AUXILIARY = '0';
-const EVENT_CODE = 'E701';
+const EVENT_CODE = 'E702';
 const EVENT_ID = '167681000';
 const PARTITION = '000';
 const PROTOCOL_TYPE = 'CONTACT_ID';
 
 const prisma = new PrismaClient();
 
-const fetchEvents = async (
+const fetchOccurences = async (
   date: Date,
   batches: number = 1
-): Promise<IEventMap.IEventMap[]> => {
+): Promise<IOccurenceMap.IOccurenceMap[]> => {
   const httpClientInstance = new HttpClientUtil.HttpClient();
-  const milliseconds = EVENTS_PERIOD_MILLISECONDS / batches;
-  const batchWindowList: IBatchWindow.IBatchWindow[] = [];
+  const milliseconds = OCCURENCES_PERIOD_MILLISECONDS / batches;
+  const batchWindowMapList: IBatchWindowMap.IBatchWindowMap[] = [];
 
   let startDate = momentTimezone.utc(date);
 
   httpClientInstance.setAuthenticationStrategy(new BearerStrategy.BearerStrategy(process.env.SIGMA_CLOUD_BEARER_TOKEN as string));
     
   for (let index = 0; index < batches; index += 1) {
-    const endDate = momentTimezone.utc(startDate).add((batches - 1) === index ? milliseconds - batches : milliseconds, 'milliseconds');
+    const endDate = momentTimezone.utc(startDate).add((batches - 1) === index ? milliseconds - (batches - 1) : milliseconds, 'milliseconds');
     
-    batchWindowList.push(
+    batchWindowMapList.push(
       {
         startDate: startDate.toDate(),
         endDate: endDate.toDate()
@@ -42,8 +46,52 @@ const fetchEvents = async (
 
   try {
     const responseList = await Promise.all(
-      batchWindowList.map(
-        async (batchWindow: IBatchWindow.IBatchWindow): Promise<Axios.AxiosXHR<IEventMap.IEventMap[]>> => {
+      batchWindowMapList.map(
+        async (batchWindow: IBatchWindowMap.IBatchWindowMap): Promise<Axios.AxiosXHR<IOccurenceMap.IOccurenceMap[]>> => {
+          return await httpClientInstance.get<IOccurenceMap.IOccurenceMap[]>(`https://api.segware.com.br/v2/occurrences?occurrenceClosingUserId=${ SYSTEM_CLOSING_PERSON_ID }&startDate=${ momentTimezone.utc(batchWindow.startDate).toISOString() }&endDate=${ momentTimezone.utc(batchWindow.endDate).toISOString() }`);
+        }
+      )
+    );
+
+    return responseList.flatMap((response: Axios.AxiosXHR<IOccurenceMap.IOccurenceMap[]>): IOccurenceMap.IOccurenceMap[] => response.data);
+  } catch (error: any) {
+    if (error.message === 'Maximum call stack size exceeded' || error.response?.data?.messageKey === 'registers_over_limit') {
+      return fetchOccurences(startDate.toDate(), batches * 2);
+    }
+
+    throw error;
+  }
+};
+
+const fetchEvents = async (
+  date: Date,
+  batches: number = 1
+): Promise<IEventMap.IEventMap[]> => {
+  const httpClientInstance = new HttpClientUtil.HttpClient();
+  const milliseconds = EVENTS_PERIOD_MILLISECONDS / batches;
+  const batchWindowMapList: IBatchWindowMap.IBatchWindowMap[] = [];
+
+  let startDate = momentTimezone.utc(date);
+
+  httpClientInstance.setAuthenticationStrategy(new BearerStrategy.BearerStrategy(process.env.SIGMA_CLOUD_BEARER_TOKEN as string));
+    
+  for (let index = 0; index < batches; index += 1) {
+    const endDate = momentTimezone.utc(startDate).add((batches - 1) === index ? milliseconds - (batches - 1) : milliseconds, 'milliseconds');
+    
+    batchWindowMapList.push(
+      {
+        startDate: startDate.toDate(),
+        endDate: endDate.toDate()
+      }
+    );
+
+    startDate = endDate.add(1, 'milliseconds');
+  }
+
+  try {
+    const responseList = await Promise.all(
+      batchWindowMapList.map(
+        async (batchWindow: IBatchWindowMap.IBatchWindowMap): Promise<Axios.AxiosXHR<IEventMap.IEventMap[]>> => {
           return await httpClientInstance.get<IEventMap.IEventMap[]>(`https://api.segware.com.br/v1/events?startDate=${ momentTimezone.utc(batchWindow.startDate).toISOString() }&endDate=${ momentTimezone.utc(batchWindow.endDate).toISOString() }`);
         }
       )
@@ -60,41 +108,60 @@ const fetchEvents = async (
 };
 
 export const createSigmaCloudEvents = async (includedCucSet: Set<string>): Promise<void> => {
-  const sigmaCloudHttpClientInstance = new HttpClientUtil.HttpClient();
-  
-  sigmaCloudHttpClientInstance.setAuthenticationStrategy(new BearerStrategy.BearerStrategy(process.env.SIGMA_CLOUD_BEARER_TOKEN as string));
-
   try {
-    const databaseNow: [{ date: Date }] = await prisma.$queryRaw`SELECT NOW() AS date;`;
-    
     let sigmaCloudEventsTrackerWindow = await prisma.sigma_cloud_events_tracker_window.findFirst();
 
-    if (!sigmaCloudEventsTrackerWindow || momentTimezone.utc(databaseNow[0].date).isAfter(momentTimezone.utc(sigmaCloudEventsTrackerWindow.started_at).add(EVENTS_PERIOD_MILLISECONDS, 'milliseconds')))  {
+    if (!sigmaCloudEventsTrackerWindow || momentTimezone.utc().isAfter(momentTimezone.utc(sigmaCloudEventsTrackerWindow.started_at).add(EVENTS_PERIOD_MILLISECONDS, 'milliseconds')))  {
       await prisma.sigma_cloud_events_tracker_window.deleteMany();
       
-      sigmaCloudEventsTrackerWindow = await prisma.sigma_cloud_events_tracker_window.create({});
+      sigmaCloudEventsTrackerWindow = await prisma.sigma_cloud_events_tracker_window.create({ data: { id: 1 } });
     }
 
     await prisma.sigma_cloud_events_tracker_triggers.deleteMany({ where: { updated_at: { lt: sigmaCloudEventsTrackerWindow.created_at } } });
+    
+    const [
+      occurrenceMapList,
+      eventMapList,
+    ] = await Promise.all(
+      [
+        fetchOccurences(sigmaCloudEventsTrackerWindow.created_at),
+        fetchEvents(sigmaCloudEventsTrackerWindow.created_at)
+      ]
+    );  
 
-    const eventMapList = await fetchEvents(sigmaCloudEventsTrackerWindow.created_at);
+    const occurrenceBundle: Record<string, IOccurenceMap.IOccurenceMap> = {};
     const eventBundle: Record<string, Record<string, Record<string, number>>> = {}; 
+
+    await Promise.all(
+      occurrenceMapList.map(
+        async (occurrenceMap: IOccurenceMap.IOccurenceMap): Promise<void> => {
+          occurrenceBundle[occurrenceMap.id] = occurrenceMap;
+        }
+      )
+    )
 
     await Promise.allSettled(
       eventMapList.map(
         async (eventMap: IEventMap.IEventMap): Promise<void> => {
-          const eventMapCuc = eventMap.cuc;
-  
-          if (!includedCucSet.has(eventMapCuc)) {
-            return;
-          }
-  
           const eventMapCode = eventMap.code;
   
           if (!INCLUDED_CODE_SET.has(eventMapCode)) {
             return;
           }
+
+          const eventMapCuc = eventMap.cuc;
   
+          if (!includedCucSet.has(eventMapCuc)) {
+            return;
+          }
+
+          const eventMapOccurenceId = eventMap.occurrenceId;
+          const occurenceMap = eventMapOccurenceId ? occurrenceBundle[eventMapOccurenceId] : null;
+
+          if (occurenceMap) {
+            return;
+          }
+
           const accountBundle = eventBundle[eventMapCuc] || {};
           const eventMapAccountId = eventMap.accountId;
           const codeCountMap = accountBundle[eventMapAccountId] || {};
@@ -106,11 +173,16 @@ export const createSigmaCloudEvents = async (includedCucSet: Set<string>): Promi
       )
     );
     
-    const startDate = momentTimezone.utc(sigmaCloudEventsTrackerWindow.created_at);
-    const endDate = momentTimezone.utc(sigmaCloudEventsTrackerWindow.created_at).add(EVENTS_PERIOD_MILLISECONDS, 'milliseconds');
-    const whatsAppHttpClientInstance = new HttpClientUtil.HttpClient();
+    const startDate = momentTimezone.utc(sigmaCloudEventsTrackerWindow.created_at).subtract(3, 'hours');
+    const endDate = momentTimezone.utc(sigmaCloudEventsTrackerWindow.created_at).subtract(3, 'hours').add(EVENTS_PERIOD_MILLISECONDS, 'milliseconds');
+    const startDateToDate = startDate.toDate();
     const startDateFormattation = startDate.clone().format('YYYY-MM-DD HH:mm:ss');
+    const endDateToDate = endDate.toDate();
     const endDateFormattation = endDate.clone().format('YYYY-MM-DD HH:mm:ss');
+    const sigmaCloudHttpClientInstance = new HttpClientUtil.HttpClient();
+    const whatsAppHttpClientInstance = new HttpClientUtil.HttpClient();
+  
+    sigmaCloudHttpClientInstance.setAuthenticationStrategy(new BearerStrategy.BearerStrategy(process.env.SIGMA_CLOUD_BEARER_TOKEN as string));
 
     Promise.allSettled(
       Object
@@ -163,12 +235,28 @@ export const createSigmaCloudEvents = async (includedCucSet: Set<string>): Promi
                               const clientGroupMap = clientGroupMapList.find((clientGroupMap: IClientGroupMap.IClientGroupMap): boolean => clientGroupMap.id === accountMapClientGroupId);
                               const clientGroupMapName = clientGroupMap?.name || 'Vazio';
 
+                              await prisma.sigma_cloud_events_tracker_registers.create(
+                                {
+                                  data: {
+                                    account_code: accountMapAccountCode,
+                                    trade_name: accountMapTradeName,
+                                    company_trade_name: companyMapTradeName,
+                                    client_group_name: clientGroupMapName,
+                                    cuc,
+                                    code,
+                                    quantity: count,
+                                    period_started_at: startDateToDate,
+                                    period_ended_at: endDateToDate
+                                  }
+                                }
+                              );
+
                               try {
                                 await whatsAppHttpClientInstance.post<unknown>(
                                   `https://v5.chatpro.com.br/${ process.env.CHAT_PRO_INSTANCE_ID }/api/v1/send_message`,
                                   {
                                     number: process.env.CHAT_PRO_GROUP_JID as string,
-                                    message: `⚠️EXCESSO DE EVENTOS⚠️\n\nConta: ${ accountMapAccountCode }\nNome: ${ accountMapTradeName }\nEmpresa: ${ companyMapTradeName }\nGrupo: ${ clientGroupMapName }\nEvento: ${ code }\nPeríodo: ${ startDateFormattation } -> ${ endDateFormattation }\nQuantidade: ${ count }`
+                                    message: `⚠️ *EXCESSO DE EVENTOS* ⚠️\n\n*Conta:* ${ accountMapAccountCode }\n*Nome:* ${ accountMapTradeName.length >= ACCOUNT_TRADE_NAME_LENGTH ? accountMapTradeName.slice(0, ACCOUNT_TRADE_NAME_LENGTH).trimEnd() + '...' : accountMapTradeName }\n*Empresa:* ${ companyMapTradeName }\n*Grupo:* ${ clientGroupMapName }\n*CUC*: ${ cuc }\n*Evento:* ${ code }\n*Quantidade:* ${ count }\n*Período Inicial:* ${ startDateFormattation }\n*Período Final:* ${ endDateFormattation }`
                                   },
                                   {
                                     headers: { Authorization: process.env.CHAT_PRO_BEARER_TOKEN },
@@ -189,9 +277,9 @@ export const createSigmaCloudEvents = async (includedCucSet: Set<string>): Promi
                                         auxiliary: AUXILIARY,
                                         code: EVENT_CODE,
                                         companyId: accountMapCompanyId,
-                                        complement: `Advertência: Excesso de eventos detectado, Código: ${ code }, Período: ${ startDateFormattation } -> ${ endDateFormattation }, Quantidade: ${ count }`,
+                                        complement: `Advertência: Excesso de eventos detectado, CUC: ${ cuc }, Código: ${ code }, Quantidade: ${ count }, Período Inicial: ${ startDateFormattation }, Período Final: ${ endDateFormattation }`,
                                         eventId: EVENT_ID,
-                                        eventLog: `Advertência: Excesso de eventos detectado, Código: ${ code }, Período: ${ startDateFormattation } -> ${ endDateFormattation }, Quantidade: ${ count }`,
+                                        eventLog: `Advertência: Excesso de eventos detectado, CUC: ${ cuc }, Código: ${ code }, Quantidade: ${ count }, Período Inicial: ${ startDateFormattation }, Período Final: ${ endDateFormattation }`,
                                         partition: PARTITION,
                                         protocolType: PROTOCOL_TYPE
                                       }
@@ -207,26 +295,12 @@ export const createSigmaCloudEvents = async (includedCucSet: Set<string>): Promi
                                       auxiliary: AUXILIARY,
                                       code: EVENT_CODE,
                                       company_id: accountMapCompanyId,
-                                      complement: `Advertência: Excesso de eventos detectado, Código: ${ code }, Período: ${ startDateFormattation } -> ${ endDateFormattation }, Quantidade: ${ count }`,
+                                      complement: `Advertência: Excesso de eventos detectado, CUC: ${ cuc }, Código: ${ code }, Quantidade: ${ count }, Período Inicial: ${ startDateFormattation }, Período Final: ${ endDateFormattation }`,
                                       event_id: EVENT_ID,
-                                      event_log: `Advertência: Excesso de eventos detectado, Código: ${ code }, Período: ${ startDateFormattation } -> ${ endDateFormattation }, Quantidade: ${ count }`,
+                                      event_log: `Advertência: Excesso de eventos detectado, CUC: ${ cuc }, Código: ${ code }, Quantidade: ${ count }, Período Inicial: ${ startDateFormattation }, Período Final: ${ endDateFormattation }`,
                                       partition: PARTITION,
                                       protocol_type: PROTOCOL_TYPE,
                                       status: 'sent'
-                                    }
-                                  }
-                                );
-                    
-                                await prisma.sigma_cloud_events_tracker_registers.create(
-                                  {
-                                    data: {
-                                      account_code: accountMapAccountCode,
-                                      trade_name: accountMapTradeName,
-                                      company_trade_name: companyMapTradeName,
-                                      client_group_name: clientGroupMapName,
-                                      code,
-                                      period: `${ startDateFormattation } -> ${ endDateFormattation }`,
-                                      quantity: count
                                     }
                                   }
                                 );
@@ -241,9 +315,9 @@ export const createSigmaCloudEvents = async (includedCucSet: Set<string>): Promi
                                       auxiliary: AUXILIARY,
                                       code: EVENT_CODE,
                                       company_id: accountMapCompanyId,
-                                      complement: `Advertência: Excesso de eventos detectado, Código: ${ code }, Período: ${ startDateFormattation } -> ${ endDateFormattation }, Quantidade: ${ count }`,
+                                      complement: `Advertência: Excesso de eventos detectado, CUC: ${ cuc }, Código: ${ code }, Quantidade: ${ count }, Período Inicial: ${ startDateFormattation }, Período Final: ${ endDateFormattation }`,
                                       event_id: EVENT_ID,
-                                      event_log: `Advertência: Excesso de eventos detectado, Código: ${ code }, Período: ${ startDateFormattation } -> ${ endDateFormattation }, Quantidade: ${ count }`,
+                                      event_log: `Advertência: Excesso de eventos detectado, CUC: ${ cuc }, Código: ${ code }, Quantidade: ${ count }, Período Inicial: ${ startDateFormattation }, Período Final: ${ endDateFormattation }`,
                                       partition: PARTITION,
                                       protocol_type: PROTOCOL_TYPE,
                                       status: 'failed'
@@ -272,7 +346,7 @@ export const createSigmaCloudEvents = async (includedCucSet: Set<string>): Promi
             );
           }
         )
-    )
+    );
   } catch (error: unknown) {
     loggerUtil.error(error instanceof Error ? error.message : String(error));
   }
