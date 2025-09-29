@@ -54,7 +54,7 @@ const buildServer = async (): Promise<void> => {
     await startServer(serverInstance as Express);
 
     createSequentialInterval(
-      async (): Promise<void> => createSigmaCloudEventsService.createSigmaCloudEvents(new Set<string>(['ALR'])), 
+      async (): Promise<void> => createSigmaCloudEventsService.createSigmaCloudEvents(new Set<string>(['ALI', 'ALR', 'BEM', 'CER', 'IVA', 'PAB', 'PIN'])), 
       MONITORING_INTERVAL
     );
   } catch (error: unknown) {

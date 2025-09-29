@@ -7,7 +7,6 @@ const OCCURENCES_PERIOD_HOURS = 2;
 const OCCURENCES_PERIOD_MILLISECONDS = momentTimezone.duration(OCCURENCES_PERIOD_HOURS, 'hours').asMilliseconds();
 const EVENTS_PERIOD_HOURS = 2;
 const EVENTS_PERIOD_MILLISECONDS = momentTimezone.duration(EVENTS_PERIOD_HOURS, 'hours').asMilliseconds();
-const INCLUDED_CODE_SET = new Set<string>(['E130', 'E131', 'E132', 'E133', '1130', '1131', '1132', '1133']);
 const SYSTEM_CLOSING_PERSON_ID = 52583;
 const EVENTS_COUNT_THRESHOLD = 20;
 const ACCOUNT_TRADE_NAME_LENGTH = 14;
@@ -143,12 +142,6 @@ export const createSigmaCloudEvents = async (includedCucSet: Set<string>): Promi
     await Promise.allSettled(
       eventMapList.map(
         async (eventMap: IEventMap.IEventMap): Promise<void> => {
-          const eventMapCode = eventMap.code;
-  
-          if (!INCLUDED_CODE_SET.has(eventMapCode)) {
-            return;
-          }
-
           const eventMapCuc = eventMap.cuc;
   
           if (!includedCucSet.has(eventMapCuc)) {
@@ -165,6 +158,7 @@ export const createSigmaCloudEvents = async (includedCucSet: Set<string>): Promi
           const accountBundle = eventBundle[eventMapCuc] || {};
           const eventMapAccountId = eventMap.accountId;
           const codeCountMap = accountBundle[eventMapAccountId] || {};
+          const eventMapCode = eventMap.code;
   
           eventBundle[eventMapCuc] = accountBundle;
           accountBundle[eventMapAccountId] = codeCountMap;
