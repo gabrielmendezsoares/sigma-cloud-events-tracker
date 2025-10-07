@@ -116,15 +116,17 @@ export const createSigmaCloudEvents = async (includedCucSet: Set<string>): Promi
       sigmaCloudEventsTrackerWindow = await prisma.sigma_cloud_events_tracker_window.create({ data: { id: 1 } });
     }
 
-    await prisma.sigma_cloud_events_tracker_triggers.deleteMany({ where: { updated_at: { lt: sigmaCloudEventsTrackerWindow.created_at } } });
+    const sigmaCloudEventsTrackerWindowStartedAt = sigmaCloudEventsTrackerWindow.started_at;
+
+    await prisma.sigma_cloud_events_tracker_triggers.deleteMany({ where: { created_at: { lt: sigmaCloudEventsTrackerWindowStartedAt } } });
     
     const [
       occurrenceMapList,
-      eventMapList,
+      eventMapList
     ] = await Promise.all(
       [
-        fetchOccurences(sigmaCloudEventsTrackerWindow.created_at),
-        fetchEvents(sigmaCloudEventsTrackerWindow.created_at)
+        fetchOccurences(sigmaCloudEventsTrackerWindowStartedAt),
+        fetchEvents(sigmaCloudEventsTrackerWindowStartedAt)
       ]
     );  
 
@@ -166,19 +168,19 @@ export const createSigmaCloudEvents = async (includedCucSet: Set<string>): Promi
         }
       )
     );
-    
-    const startDate = momentTimezone.utc(sigmaCloudEventsTrackerWindow.created_at).subtract(3, 'hours');
-    const endDate = momentTimezone.utc(sigmaCloudEventsTrackerWindow.created_at).subtract(3, 'hours').add(EVENTS_PERIOD_MILLISECONDS, 'milliseconds');
-    const startDateToDate = startDate.toDate();
-    const startDateFormattation = startDate.clone().format('YYYY-MM-DD HH:mm:ss');
-    const endDateToDate = endDate.toDate();
-    const endDateFormattation = endDate.clone().format('YYYY-MM-DD HH:mm:ss');
+
+    const startDate = momentTimezone.utc(sigmaCloudEventsTrackerWindowStartedAt);
+    const endDate = startDate.clone().add(EVENTS_PERIOD_MILLISECONDS, 'milliseconds');
+    const startDateToDate = startDate.clone().subtract(3, 'hours').toDate();
+    const endDateToDate = endDate.clone().subtract(3, 'hours').toDate();
+    const startDateFormattation = startDate.clone().subtract(3, 'hours').format('YYYY-MM-DD HH:mm:ss');
+    const endDateFormattation = endDate.clone().subtract(3, 'hours').format('YYYY-MM-DD HH:mm:ss');
     const sigmaCloudHttpClientInstance = new HttpClientUtil.HttpClient();
     const whatsAppHttpClientInstance = new HttpClientUtil.HttpClient();
   
     sigmaCloudHttpClientInstance.setAuthenticationStrategy(new BearerStrategy.BearerStrategy(process.env.SIGMA_CLOUD_BEARER_TOKEN as string));
 
-    Promise.allSettled(
+    await Promise.allSettled(
       Object
         .entries(eventBundle)
         .map(
@@ -217,16 +219,15 @@ export const createSigmaCloudEvents = async (includedCucSet: Set<string>): Promi
                                   }
                                 }
                               );
-                  
+
                               const accountMap = (await sigmaCloudHttpClientInstance.get<IAccountMap.IAccountMap>(`https://api.segware.com.br/v5/accounts/${ accountId }`)).data;
                               const accountMapCompanyId = accountMap.companyId;
-                              const accountMapClientGroupId = accountMap.clientGroupId;
+                              const clientGroupMapList = (await sigmaCloudHttpClientInstance.get<IClientGroupMap.IClientGroupMap[]>(`https://api.segware.com.br/v1/clientGroups`)).data;
+                              const companyMap = (await sigmaCloudHttpClientInstance.get<ICompanyMap.ICompanyMap>(`https://api.segware.com.br/v1/company/${ accountMapCompanyId }`)).data;
+                              const clientGroupMap = clientGroupMapList.find((clientGroupMap: IClientGroupMap.IClientGroupMap): boolean => clientGroupMap.id === accountMap.clientGroupId);
                               const accountMapAccountCode = accountMap.accountCode;
                               const accountMapTradeName = accountMap.tradeName;
-                              const companyMap = (await sigmaCloudHttpClientInstance.get<ICompanyMap.ICompanyMap>(`https://api.segware.com.br/v1/company/${ accountMapCompanyId }`)).data;
                               const companyMapTradeName = companyMap.tradeName;
-                              const clientGroupMapList = (await sigmaCloudHttpClientInstance.get<IClientGroupMap.IClientGroupMap[]>(`https://api.segware.com.br/v1/clientGroups`)).data;
-                              const clientGroupMap = clientGroupMapList.find((clientGroupMap: IClientGroupMap.IClientGroupMap): boolean => clientGroupMap.id === accountMapClientGroupId);
                               const clientGroupMapName = clientGroupMap?.name || 'Vazio';
 
                               await prisma.sigma_cloud_events_tracker_registers.create(
