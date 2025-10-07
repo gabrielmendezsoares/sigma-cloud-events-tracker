@@ -171,12 +171,12 @@ export const createSigmaCloudEvents = async (includedCucSet: Set<string>): Promi
 
     const startDate = momentTimezone.utc(sigmaCloudEventsTrackerWindowStartedAt);
     const endDate = startDate.clone().add(EVENTS_PERIOD_MILLISECONDS, 'milliseconds');
+    const sigmaCloudHttpClientInstance = new HttpClientUtil.HttpClient();
     const startDateToDate = startDate.clone().subtract(3, 'hours').toDate();
     const endDateToDate = endDate.clone().subtract(3, 'hours').toDate();
+    const whatsAppHttpClientInstance = new HttpClientUtil.HttpClient();
     const startDateFormattation = startDate.clone().subtract(3, 'hours').format('YYYY-MM-DD HH:mm:ss');
     const endDateFormattation = endDate.clone().subtract(3, 'hours').format('YYYY-MM-DD HH:mm:ss');
-    const sigmaCloudHttpClientInstance = new HttpClientUtil.HttpClient();
-    const whatsAppHttpClientInstance = new HttpClientUtil.HttpClient();
   
     sigmaCloudHttpClientInstance.setAuthenticationStrategy(new BearerStrategy.BearerStrategy(process.env.SIGMA_CLOUD_BEARER_TOKEN as string));
 
